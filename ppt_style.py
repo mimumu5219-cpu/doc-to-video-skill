@@ -193,8 +193,8 @@ def make_tip_box(poem, title="解题口诀", width=800):
     # 左侧红色竖线装饰（强调感）
     draw.rectangle([14, 25, 18, box_h - 15], fill=COLORS['accent'])
     
-    # "口诀"小标签
-    tag_text = "解题口诀"
+    # 标签小字（可用 title 自定义，默认「解题口诀」）
+    tag_text = title
     tag_bbox = tag_font.getbbox(tag_text)
     tag_tw = tag_bbox[2] - tag_bbox[0]
     draw.text((32, 28 - tag_bbox[1]),

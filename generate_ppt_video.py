@@ -69,12 +69,15 @@ def parse_content(filepath):
                 'subtitle': '',   # 英文副标题
                 'chapter': '',    # 题型编号
                 'diagram': '',           # 几何图文件名
+                'diagram_label': '',     # 图卡标题（默认「几何示意图」）
                 'diagram_layers': [],    # 图示标注图层（分步出现）
                 'points': [],            # 要点（可为字符串或 (文本, 动效类型) 元组）
                 'tip': '',        # 解题口诀
                 'tip_anim': 'pulse_emph',  # 口诀动效，默认 pulse_emph 强调（入场后1.6秒静止）
                 'title_anim': 'scale_bounce',  # 标题动效，默认 scale_bounce
-                'narration': ''
+                'narration': '',
+                'sec_title': '',         # 要点小标题，默认「模型核心」
+                'tip_title': '',         # 口诀框标题，默认「解题口诀」
             }
             current_field = None
             continue
@@ -110,6 +113,18 @@ def parse_content(filepath):
         if line.startswith('几何图:'):
             current_section['diagram'] = line[4:].strip()
             current_field = 'diagram'
+            continue
+        
+        # 图卡标题（可选）
+        if line.startswith('图示标题:'):
+            current_section['diagram_label'] = line[5:].strip()
+            current_field = 'diagram_label'
+            continue
+        
+        # 要点小标题（可选）
+        if line.startswith('要点小标题:'):
+            current_section['sec_title'] = line[6:].strip()
+            current_field = 'sec_title'
             continue
         
         # 图示标注（多层，分步出现）
@@ -201,7 +216,15 @@ def parse_content(filepath):
     
     if current_section:
         sections.append(current_section)
-    
+
+    # 全局「要点小标题 / 口诀标题」作为各页默认值
+    for key, field in (('要点小标题', 'sec_title'), ('口诀标题', 'tip_title')):
+        val = (global_config.get(key) or '').strip()
+        if val:
+            for s in sections:
+                if not s.get(field):
+                    s[field] = val
+
     return global_config, sections
 
 # ========== 加载几何图 ==========
@@ -296,9 +319,9 @@ def create_ppt_section(section, audio_duration, bg_img, video_w, video_h, window
     # 3. 装饰线（从左到右生长）—— 单独处理，从标题图里提取不方便
     # 简化：标题整体缩放弹入，装饰线包含在标题图中
     
-    # 4. "模型核心"小标题
+    # 4. 要点小标题（可用 要点小标题 自定义，默认「模型核心」）
     sec_title_font = _get_font(28, bold=True, chinese=True)
-    sec_title_img = render_text("模型核心", sec_title_font, COLORS['text_dark'])
+    sec_title_img = render_text(section.get('sec_title') or '模型核心', sec_title_font, COLORS['text_dark'])
     st_w, st_h = sec_title_img.size
     sec_y = title_y + t_h + 35
     elements.append(('sec_title', sec_title_img, title_x, sec_y, 'fade_slide_up', 0.25, {}))
@@ -362,7 +385,7 @@ def create_ppt_section(section, audio_duration, bg_img, video_w, video_h, window
     tip_y = point_y + 25
     tip_delay = point_delay + 0.15
     if section['tip']:
-        tip = make_tip_box(section['tip'], width=txt_col_w)
+        tip = make_tip_box(section['tip'], title=section.get('tip_title') or '解题口诀', width=txt_col_w)
         tip_w, tip_h = tip.size
         tip_emph = section.get('tip_anim', 'pulse_emph')
         # 入场始终用 card_slide_rot（滑入+旋转+弹跳），入场后叠加强调动效（1.6秒后静止）
@@ -398,7 +421,8 @@ def create_ppt_section(section, audio_duration, bg_img, video_w, video_h, window
                                    os.path.dirname(os.path.abspath(__file__))])
         if geo_img:
             card_h = int(video_h * (0.86 if diagram_left else 0.82))
-            card = make_geometry_card(geo_img, card_w=img_col_w, card_h=card_h)
+            card = make_geometry_card(geo_img, card_w=img_col_w, card_h=card_h,
+                                      label=section.get('diagram_label', '几何示意图'))
             cw, ch = card.size
             card_x = img_col_x
             card_y = top_margin + 10
@@ -764,7 +788,25 @@ async def generate_audio_async(text, voice_name, output_path):
     await communicate.save(output_path)
 
 def generate_audio(text, voice_name, output_path):
-    asyncio.run(generate_audio_async(text, voice_name, output_path))
+    """优先 edge-tts；不可用时回退到 macOS 系统语音（离线）"""
+    try:
+        asyncio.run(generate_audio_async(text, voice_name, output_path))
+        if os.path.getsize(output_path) > 0:
+            return
+    except Exception as e:
+        print(f'    edge-tts 不可用（{type(e).__name__}），改用系统语音合成')
+    _say_tts(text, output_path)
+
+def _say_tts(text, output_path, rate=175):
+    """macOS `say` 离线合成 → ffmpeg 转 mp3"""
+    import subprocess, tempfile
+    import imageio_ffmpeg
+    aiff = tempfile.mktemp(suffix='.aiff')
+    subprocess.run(['say', '-v', 'Tingting', '-r', str(rate), '-o', aiff, text], check=True)
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run([ff, '-y', '-loglevel', 'error', '-i', aiff,
+                    '-ar', '44100', '-ac', '1', '-b:a', '128k', output_path], check=True)
+    os.remove(aiff)
 
 # ========== 字幕生成 ==========
 def split_narration_to_sentences(text):
